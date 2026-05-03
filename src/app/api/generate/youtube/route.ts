@@ -18,6 +18,22 @@ function extractVideoId(url: string): string | null {
   return null;
 }
 
+async function fetchTranscript(videoId: string): Promise<string | null> {
+  const langs = ["en", "en-US", "en-GB", undefined];
+  for (const lang of langs) {
+    try {
+      const config = lang ? { lang } : undefined;
+      const segments = await YoutubeTranscript.fetchTranscript(videoId, config);
+      if (segments && segments.length > 0) {
+        return segments.map((s) => s.text).join(" ");
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
 export async function POST(request: Request) {
   const session = await auth();
   if (!session?.user?.id) {
@@ -36,24 +52,18 @@ export async function POST(request: Request) {
     }
 
     console.log("[generate/youtube] Fetching transcript for:", videoId);
-    let segments;
-    try {
-      segments = await YoutubeTranscript.fetchTranscript(videoId);
-    } catch {
+    const transcript = await fetchTranscript(videoId);
+
+    if (!transcript) {
       return NextResponse.json(
-        { error: "Could not fetch transcript. The video may not have captions available." },
+        {
+          error:
+            "No captions available for this video. Try a video with subtitles, or copy the content manually and paste it in the text editor.",
+        },
         { status: 400 }
       );
     }
 
-    if (!segments || segments.length === 0) {
-      return NextResponse.json(
-        { error: "No transcript found for this video." },
-        { status: 400 }
-      );
-    }
-
-    const transcript = segments.map((s) => s.text).join(" ");
     const content = `[YouTube Video Transcript]\n\n${transcript}`;
     console.log("[generate/youtube] Transcript length:", transcript.length);
 
