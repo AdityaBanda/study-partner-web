@@ -1,7 +1,7 @@
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { generateAll } from "@/lib/ai/generate";
-import { YoutubeTranscript } from "youtube-transcript";
+import { fetchYouTubeTranscript } from "@/lib/youtube-transcript";
 import { NextResponse } from "next/server";
 
 function extractVideoId(url: string): string | null {
@@ -14,22 +14,6 @@ function extractVideoId(url: string): string | null {
   for (const pattern of patterns) {
     const match = url.match(pattern);
     if (match) return match[1];
-  }
-  return null;
-}
-
-async function fetchTranscript(videoId: string): Promise<string | null> {
-  const langs = ["en", "en-US", "en-GB", undefined];
-  for (const lang of langs) {
-    try {
-      const config = lang ? { lang } : undefined;
-      const segments = await YoutubeTranscript.fetchTranscript(videoId, config);
-      if (segments && segments.length > 0) {
-        return segments.map((s) => s.text).join(" ");
-      }
-    } catch {
-      continue;
-    }
   }
   return null;
 }
@@ -52,7 +36,7 @@ export async function POST(request: Request) {
     }
 
     console.log("[generate/youtube] Fetching transcript for:", videoId);
-    const transcript = await fetchTranscript(videoId);
+    const transcript = await fetchYouTubeTranscript(videoId);
 
     if (!transcript) {
       return NextResponse.json(
