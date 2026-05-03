@@ -12,8 +12,8 @@ const YT_HEADERS = {
   Cookie: "CONSENT=PENDING+987; SOCS=CAESEwgDEgk2ODE3MTcyNjQaAmVuIAEaBgiA_LyaBg",
 };
 
-// Embedded player client — bypasses LOGIN_REQUIRED on datacenter IPs
-async function getTracksViaEmbeddedPlayer(
+// ANDROID client with embedUrl — bypasses LOGIN_REQUIRED on datacenter IPs
+async function getTracksViaAndroidEmbed(
   videoId: string
 ): Promise<CaptionTrack[] | null> {
   try {
@@ -23,15 +23,15 @@ async function getTracksViaEmbeddedPlayer(
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...YT_HEADERS,
+          "User-Agent":
+            "com.google.android.youtube/20.10.38 (Linux; U; Android 14)",
+          Cookie: YT_HEADERS.Cookie,
         },
         body: JSON.stringify({
           context: {
             client: {
-              clientName: "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
-              clientVersion: "2.0",
-              hl: "en",
-              gl: "US",
+              clientName: "ANDROID",
+              clientVersion: "20.10.38",
             },
             thirdParty: {
               embedUrl: "https://www.google.com",
@@ -43,13 +43,13 @@ async function getTracksViaEmbeddedPlayer(
     );
 
     if (!res.ok) {
-      console.log("[transcript] Embedded player status:", res.status);
+      console.log("[transcript] Android embed status:", res.status);
       return null;
     }
 
     const data = await res.json();
     console.log(
-      "[transcript] Embedded player playability:",
+      "[transcript] Android embed playability:",
       data?.playabilityStatus?.status
     );
     const tracks =
@@ -60,56 +60,7 @@ async function getTracksViaEmbeddedPlayer(
     }
     return null;
   } catch (e) {
-    console.log("[transcript] Embedded player error:", (e as Error).message);
-    return null;
-  }
-}
-
-// ANDROID client — works from non-datacenter IPs
-async function getTracksViaInnerTube(
-  videoId: string
-): Promise<CaptionTrack[] | null> {
-  try {
-    const res = await fetch(
-      "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 14)",
-          Cookie: YT_HEADERS.Cookie,
-        },
-        body: JSON.stringify({
-          context: {
-            client: {
-              clientName: "ANDROID",
-              clientVersion: "20.10.38",
-            },
-          },
-          videoId,
-        }),
-      }
-    );
-
-    if (!res.ok) {
-      console.log("[transcript] InnerTube status:", res.status);
-      return null;
-    }
-
-    const data = await res.json();
-    console.log(
-      "[transcript] InnerTube playability:",
-      data?.playabilityStatus?.status
-    );
-    const tracks =
-      data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-
-    if (Array.isArray(tracks) && tracks.length > 0) {
-      return tracks;
-    }
-    return null;
-  } catch (e) {
-    console.log("[transcript] InnerTube error:", (e as Error).message);
+    console.log("[transcript] Android embed error:", (e as Error).message);
     return null;
   }
 }
@@ -352,29 +303,18 @@ async function fetchTranscriptFromTracks(
 export async function fetchYouTubeTranscript(
   videoId: string
 ): Promise<string | null> {
-  // Method 1: Embedded player (bypasses LOGIN_REQUIRED on datacenter IPs)
-  console.log("[transcript] Trying embedded player...");
-  const embeddedTracks = await getTracksViaEmbeddedPlayer(videoId);
-  if (embeddedTracks) {
-    const text = await fetchTranscriptFromTracks(embeddedTracks);
+  // Method 1: ANDROID client with embedUrl (bypasses LOGIN_REQUIRED)
+  console.log("[transcript] Trying Android embed...");
+  const androidEmbedTracks = await getTracksViaAndroidEmbed(videoId);
+  if (androidEmbedTracks) {
+    const text = await fetchTranscriptFromTracks(androidEmbedTracks);
     if (text) {
-      console.log("[transcript] Embedded player succeeded");
+      console.log("[transcript] Android embed succeeded");
       return text;
     }
   }
 
-  // Method 2: ANDROID InnerTube API
-  console.log("[transcript] Trying InnerTube API...");
-  const innerTubeTracks = await getTracksViaInnerTube(videoId);
-  if (innerTubeTracks) {
-    const text = await fetchTranscriptFromTracks(innerTubeTracks);
-    if (text) {
-      console.log("[transcript] InnerTube succeeded");
-      return text;
-    }
-  }
-
-  // Method 3: HTML scrape
+  // Method 2: HTML scrape
   console.log("[transcript] Trying HTML scrape...");
   const htmlTracks = await getTracksViaHtmlScrape(videoId);
   if (htmlTracks) {
