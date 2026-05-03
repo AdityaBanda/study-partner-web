@@ -4,8 +4,6 @@ interface CaptionTrack {
   kind?: string;
 }
 
-const CLIENT_VERSION = "20.10.38";
-
 // Consent cookie bypasses YouTube's GDPR/consent wall on datacenter IPs
 const YT_HEADERS = {
   "User-Agent":
@@ -14,7 +12,60 @@ const YT_HEADERS = {
   Cookie: "CONSENT=PENDING+987; SOCS=CAESEwgDEgk2ODE3MTcyNjQaAmVuIAEaBgiA_LyaBg",
 };
 
-// Method 1: InnerTube player API (ANDROID client)
+// Embedded player client — bypasses LOGIN_REQUIRED on datacenter IPs
+async function getTracksViaEmbeddedPlayer(
+  videoId: string
+): Promise<CaptionTrack[] | null> {
+  try {
+    const res = await fetch(
+      "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...YT_HEADERS,
+        },
+        body: JSON.stringify({
+          context: {
+            client: {
+              clientName: "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
+              clientVersion: "2.0",
+              hl: "en",
+              gl: "US",
+            },
+            thirdParty: {
+              embedUrl: "https://www.google.com",
+            },
+          },
+          videoId,
+        }),
+      }
+    );
+
+    if (!res.ok) {
+      console.log("[transcript] Embedded player status:", res.status);
+      return null;
+    }
+
+    const data = await res.json();
+    console.log(
+      "[transcript] Embedded player playability:",
+      data?.playabilityStatus?.status
+    );
+    const tracks =
+      data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+
+    if (Array.isArray(tracks) && tracks.length > 0) {
+      return tracks;
+    }
+    return null;
+  } catch (e) {
+    console.log("[transcript] Embedded player error:", (e as Error).message);
+    return null;
+  }
+}
+
+// ANDROID client — works from non-datacenter IPs
 async function getTracksViaInnerTube(
   videoId: string
 ): Promise<CaptionTrack[] | null> {
@@ -25,14 +76,14 @@ async function getTracksViaInnerTube(
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "User-Agent": `com.google.android.youtube/${CLIENT_VERSION} (Linux; U; Android 14)`,
+          "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 14)",
           Cookie: YT_HEADERS.Cookie,
         },
         body: JSON.stringify({
           context: {
             client: {
               clientName: "ANDROID",
-              clientVersion: CLIENT_VERSION,
+              clientVersion: "20.10.38",
             },
           },
           videoId,
@@ -93,15 +144,38 @@ async function getTracksViaHtmlScrape(
     );
 
     // Extract ytInitialPlayerResponse from the HTML
-    const match = html.match(
-      /ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;\s*(?:var\s|<\/script>)/
-    );
-    if (!match) {
+    // The JSON is huge with nested braces, so we find the start and parse forward
+    const marker = "ytInitialPlayerResponse";
+    const startIdx = html.indexOf(marker);
+    if (startIdx === -1) {
       console.log("[transcript] No ytInitialPlayerResponse in HTML");
       return null;
     }
 
-    const playerResponse = JSON.parse(match[1]);
+    const jsonStart = html.indexOf("{", startIdx);
+    if (jsonStart === -1) return null;
+
+    // Find the matching closing brace by counting depth
+    let depth = 0;
+    let jsonEnd = jsonStart;
+    for (let i = jsonStart; i < html.length; i++) {
+      if (html[i] === "{") depth++;
+      else if (html[i] === "}") {
+        depth--;
+        if (depth === 0) {
+          jsonEnd = i + 1;
+          break;
+        }
+      }
+    }
+
+    let playerResponse;
+    try {
+      playerResponse = JSON.parse(html.slice(jsonStart, jsonEnd));
+    } catch {
+      console.log("[transcript] Failed to parse ytInitialPlayerResponse");
+      return null;
+    }
     console.log(
       "[transcript] HTML playability:",
       playerResponse?.playabilityStatus?.status
@@ -278,7 +352,18 @@ async function fetchTranscriptFromTracks(
 export async function fetchYouTubeTranscript(
   videoId: string
 ): Promise<string | null> {
-  // Method 1: InnerTube API
+  // Method 1: Embedded player (bypasses LOGIN_REQUIRED on datacenter IPs)
+  console.log("[transcript] Trying embedded player...");
+  const embeddedTracks = await getTracksViaEmbeddedPlayer(videoId);
+  if (embeddedTracks) {
+    const text = await fetchTranscriptFromTracks(embeddedTracks);
+    if (text) {
+      console.log("[transcript] Embedded player succeeded");
+      return text;
+    }
+  }
+
+  // Method 2: ANDROID InnerTube API
   console.log("[transcript] Trying InnerTube API...");
   const innerTubeTracks = await getTracksViaInnerTube(videoId);
   if (innerTubeTracks) {
@@ -289,7 +374,7 @@ export async function fetchYouTubeTranscript(
     }
   }
 
-  // Method 2: HTML scrape
+  // Method 3: HTML scrape
   console.log("[transcript] Trying HTML scrape...");
   const htmlTracks = await getTracksViaHtmlScrape(videoId);
   if (htmlTracks) {
@@ -300,7 +385,7 @@ export async function fetchYouTubeTranscript(
     }
   }
 
-  // Method 3: Embed page
+  // Method 4: Embed page HTML
   console.log("[transcript] Trying embed page...");
   const embedResult = await getTranscriptViaEmbedPage(videoId);
   if (embedResult) {
@@ -308,7 +393,7 @@ export async function fetchYouTubeTranscript(
     return embedResult;
   }
 
-  // Method 4: Direct timedtext API
+  // Method 5: Direct timedtext API
   console.log("[transcript] Trying direct timedtext API...");
   const timedTextResult = await getTranscriptViaTimedText(videoId);
   if (timedTextResult) {
