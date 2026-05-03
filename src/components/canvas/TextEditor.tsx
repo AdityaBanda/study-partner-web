@@ -1,7 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
+
+const YOUTUBE_REGEX =
+  /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
+
+function getYouTubeId(text: string): string | null {
+  const match = text.trim().match(YOUTUBE_REGEX);
+  return match ? match[1] : null;
+}
 
 export function TextEditor() {
   const [content, setContent] = useState("");
@@ -9,6 +17,9 @@ export function TextEditor() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
+
+  const youtubeId = useMemo(() => getYouTubeId(content), [content]);
+  const isYoutube = youtubeId !== null;
 
   const handleGenerate = async () => {
     if (!content.trim()) {
@@ -20,13 +31,18 @@ export function TextEditor() {
     setError(null);
 
     try {
-      const response = await fetch("/api/generate/all", {
+      const endpoint = isYoutube
+        ? "/api/generate/youtube"
+        : "/api/generate/all";
+
+      const body = isYoutube
+        ? { url: content.trim(), title: title.trim() || "YouTube Video" }
+        : { title: title.trim() || "Untitled Document", content: content.trim() };
+
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: title.trim() || "Untitled Document",
-          content: content.trim(),
-        }),
+        body: JSON.stringify(body),
       });
 
       if (!response.ok) {
@@ -53,10 +69,35 @@ export function TextEditor() {
         placeholder="Document title..."
         className="w-full bg-card border border-border rounded-lg px-4 py-3 text-foreground placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent"
       />
+
+      {isYoutube && (
+        <div className="bg-card border border-border rounded-xl p-4 flex items-center gap-4">
+          <div className="flex-shrink-0 w-40 h-24 rounded-lg overflow-hidden bg-background">
+            <img
+              src={`https://img.youtube.com/vi/${youtubeId}/mqdefault.jpg`}
+              alt="Video thumbnail"
+              className="w-full h-full object-cover"
+            />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <svg className="w-5 h-5 text-red-500 flex-shrink-0" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M23.5 6.2a3.02 3.02 0 0 0-2.12-2.14C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.38.56A3.02 3.02 0 0 0 .5 6.2 31.6 31.6 0 0 0 0 12a31.6 31.6 0 0 0 .5 5.8 3.02 3.02 0 0 0 2.12 2.14c1.88.56 9.38.56 9.38.56s7.5 0 9.38-.56a3.02 3.02 0 0 0 2.12-2.14A31.6 31.6 0 0 0 24 12a31.6 31.6 0 0 0-.5-5.8z"/>
+                <path d="M9.75 15.02l6.28-3.02-6.28-3.02v6.04z" fill="white"/>
+              </svg>
+              <span className="text-sm font-medium text-foreground">YouTube video detected</span>
+            </div>
+            <p className="text-xs text-muted">
+              The transcript will be extracted automatically and used to generate a mind map, explanations, and quiz.
+            </p>
+          </div>
+        </div>
+      )}
+
       <textarea
         value={content}
         onChange={(e) => setContent(e.target.value)}
-        placeholder="Paste or type your study content here...&#10;&#10;The AI will analyze it and generate:&#10;- A visual flowchart diagram&#10;- PM-friendly concept explanations&#10;- Quiz questions to test your understanding"
+        placeholder={"Paste a YouTube URL or type your study content here...\n\nExamples:\n- https://www.youtube.com/watch?v=...\n- Any technical content or notes\n\nThe AI will generate:\n- A visual mind map diagram\n- PM-friendly concept explanations\n- Quiz questions to test your understanding"}
         className="w-full min-h-[400px] bg-card border border-border rounded-lg px-4 py-3 text-foreground placeholder:text-muted resize-y focus:outline-none focus:ring-2 focus:ring-accent font-mono text-sm leading-relaxed"
       />
       {error && (
@@ -73,7 +114,15 @@ export function TextEditor() {
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
             </svg>
-            Generating...
+            {isYoutube ? "Extracting & Generating..." : "Generating..."}
+          </span>
+        ) : isYoutube ? (
+          <span className="flex items-center gap-2">
+            <svg className="w-4 h-4 text-red-400" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M23.5 6.2a3.02 3.02 0 0 0-2.12-2.14C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.38.56A3.02 3.02 0 0 0 .5 6.2 31.6 31.6 0 0 0 0 12a31.6 31.6 0 0 0 .5 5.8 3.02 3.02 0 0 0 2.12 2.14c1.88.56 9.38.56 9.38.56s7.5 0 9.38-.56a3.02 3.02 0 0 0 2.12-2.14A31.6 31.6 0 0 0 24 12a31.6 31.6 0 0 0-.5-5.8z"/>
+              <path d="M9.75 15.02l6.28-3.02-6.28-3.02v6.04z" fill="white"/>
+            </svg>
+            Generate from YouTube
           </span>
         ) : (
           "Generate Diagram & Quiz"
