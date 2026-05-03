@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
+import { fetchTranscriptClientSide } from "@/lib/youtube-transcript-client";
 
 const YOUTUBE_REGEX =
   /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
@@ -15,6 +16,7 @@ export function TextEditor() {
   const [content, setContent] = useState("");
   const [title, setTitle] = useState("");
   const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
 
@@ -29,15 +31,36 @@ export function TextEditor() {
 
     setLoading(true);
     setError(null);
+    setStatus(null);
 
     try {
-      const endpoint = isYoutube
-        ? "/api/generate/youtube"
-        : "/api/generate/all";
+      let endpoint: string;
+      let body: Record<string, string>;
 
-      const body = isYoutube
-        ? { url: content.trim(), title: title.trim() || "YouTube Video" }
-        : { title: title.trim() || "Untitled Document", content: content.trim() };
+      if (isYoutube && youtubeId) {
+        setStatus("Extracting transcript from YouTube...");
+        const result = await fetchTranscriptClientSide(youtubeId);
+
+        if (!result) {
+          throw new Error(
+            "Could not extract transcript. The video may not have captions available. Try a video with subtitles, or copy the content manually."
+          );
+        }
+
+        setStatus("Generating mindmap, explanations & quiz...");
+        endpoint = "/api/generate/all";
+        body = {
+          title: title.trim() || "YouTube Video",
+          content: `[YouTube Video Transcript]\n\n${result.text}`,
+        };
+      } else {
+        setStatus("Generating mindmap, explanations & quiz...");
+        endpoint = "/api/generate/all";
+        body = {
+          title: title.trim() || "Untitled Document",
+          content: content.trim(),
+        };
+      }
 
       const response = await fetch(endpoint, {
         method: "POST",
@@ -57,6 +80,7 @@ export function TextEditor() {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setLoading(false);
+      setStatus(null);
     }
   };
 
@@ -102,6 +126,9 @@ export function TextEditor() {
       />
       {error && (
         <p className="text-destructive text-sm">{error}</p>
+      )}
+      {status && loading && (
+        <p className="text-accent text-sm">{status}</p>
       )}
       <button
         onClick={handleGenerate}
