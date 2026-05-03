@@ -6,6 +6,14 @@ interface CaptionTrack {
 
 const CLIENT_VERSION = "20.10.38";
 
+// Consent cookie bypasses YouTube's GDPR/consent wall on datacenter IPs
+const YT_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  "Accept-Language": "en-US,en;q=0.9",
+  Cookie: "CONSENT=PENDING+987; SOCS=CAESEwgDEgk2ODE3MTcyNjQaAmVuIAEaBgiA_LyaBg",
+};
+
 // Method 1: InnerTube player API (ANDROID client)
 async function getTracksViaInnerTube(
   videoId: string
@@ -18,6 +26,7 @@ async function getTracksViaInnerTube(
         headers: {
           "Content-Type": "application/json",
           "User-Agent": `com.google.android.youtube/${CLIENT_VERSION} (Linux; U; Android 14)`,
+          Cookie: YT_HEADERS.Cookie,
         },
         body: JSON.stringify({
           context: {
@@ -31,9 +40,16 @@ async function getTracksViaInnerTube(
       }
     );
 
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.log("[transcript] InnerTube status:", res.status);
+      return null;
+    }
 
     const data = await res.json();
+    console.log(
+      "[transcript] InnerTube playability:",
+      data?.playabilityStatus?.status
+    );
     const tracks =
       data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
 
@@ -41,7 +57,8 @@ async function getTracksViaInnerTube(
       return tracks;
     }
     return null;
-  } catch {
+  } catch (e) {
+    console.log("[transcript] InnerTube error:", (e as Error).message);
     return null;
   }
 }
@@ -51,27 +68,44 @@ async function getTracksViaHtmlScrape(
   videoId: string
 ): Promise<CaptionTrack[] | null> {
   try {
-    const res = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      },
-    });
+    const res = await fetch(
+      `https://www.youtube.com/watch?v=${videoId}&hl=en`,
+      {
+        headers: {
+          ...YT_HEADERS,
+          Accept:
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+      }
+    );
 
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.log("[transcript] HTML scrape status:", res.status);
+      return null;
+    }
 
     const html = await res.text();
+    console.log(
+      "[transcript] HTML page length:",
+      html.length,
+      "has consent form:",
+      html.includes("consent.youtube.com")
+    );
 
     // Extract ytInitialPlayerResponse from the HTML
     const match = html.match(
       /ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;\s*(?:var\s|<\/script>)/
     );
-    if (!match) return null;
+    if (!match) {
+      console.log("[transcript] No ytInitialPlayerResponse in HTML");
+      return null;
+    }
 
     const playerResponse = JSON.parse(match[1]);
+    console.log(
+      "[transcript] HTML playability:",
+      playerResponse?.playabilityStatus?.status
+    );
     const tracks =
       playerResponse?.captions?.playerCaptionsTracklistRenderer
         ?.captionTracks;
@@ -79,37 +113,75 @@ async function getTracksViaHtmlScrape(
     if (Array.isArray(tracks) && tracks.length > 0) {
       return tracks;
     }
+    console.log("[transcript] HTML scrape: no caption tracks found");
+    return null;
+  } catch (e) {
+    console.log("[transcript] HTML scrape error:", (e as Error).message);
+    return null;
+  }
+}
+
+// Method 3: Fetch the watch page, extract a timedtext URL, adapt it
+async function getTranscriptViaEmbedPage(
+  videoId: string
+): Promise<string | null> {
+  try {
+    // Try the embed page which is less restricted
+    const res = await fetch(
+      `https://www.youtube.com/embed/${videoId}`,
+      { headers: YT_HEADERS }
+    );
+    if (!res.ok) return null;
+
+    const html = await res.text();
+
+    // Extract caption tracks from embed page config
+    const configMatch = html.match(
+      /"captions":\s*(\{"playerCaptionsTracklistRenderer":\{[^}]+\}\})/
+    );
+
+    if (!configMatch) {
+      // Try extracting any timedtext URL
+      const urlMatch = html.match(
+        /https:\/\/www\.youtube\.com\/api\/timedtext[^"\\]+/
+      );
+      if (urlMatch) {
+        const captionUrl =
+          urlMatch[0].replace(/\\u0026/g, "&") + "&fmt=srv3";
+        console.log("[transcript] Found timedtext URL in embed");
+        const captRes = await fetch(captionUrl, { headers: YT_HEADERS });
+        if (captRes.ok) {
+          const xml = await captRes.text();
+          const segments = parseTranscriptXml(xml);
+          if (segments.length > 0) return segments.join(" ");
+        }
+      }
+      return null;
+    }
+
     return null;
   } catch {
     return null;
   }
 }
 
-// Method 3: Use the /oembed + timedtext endpoint (no auth needed)
+// Method 4: Direct timedtext API with various lang/kind combinations
 async function getTranscriptViaTimedText(
   videoId: string
 ): Promise<string | null> {
   try {
-    // The timedtext API can be called directly with the video ID for auto-captions
     const langs = ["en", "en-US", "en-GB", ""];
     for (const lang of langs) {
-      const params = new URLSearchParams({
-        v: videoId,
-        lang: lang,
-        fmt: "srv3",
-      });
-      // Also try with kind=asr for auto-generated captions
       for (const kind of ["asr", ""]) {
+        const params = new URLSearchParams({
+          v: videoId,
+          lang: lang,
+          fmt: "srv3",
+        });
         if (kind) params.set("kind", kind);
-        else params.delete("kind");
 
         const url = `https://www.youtube.com/api/timedtext?${params}`;
-        const res = await fetch(url, {
-          headers: {
-            "User-Agent":
-              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-          },
-        });
+        const res = await fetch(url, { headers: YT_HEADERS });
 
         if (!res.ok) continue;
         const xml = await res.text();
@@ -155,7 +227,6 @@ function decodeEntities(text: string): string {
 function parseTranscriptXml(xml: string): string[] {
   const segments: string[] = [];
 
-  // Handle srv3 format: <p t="ms" d="ms">text</p>
   const srv3Regex =
     /<p[^>]*\bt="(\d+)"[^>]*\bd="(\d+)"[^>]*>([\s\S]*?)<\/p>/g;
   let match;
@@ -166,7 +237,6 @@ function parseTranscriptXml(xml: string): string[] {
 
   if (segments.length > 0) return segments;
 
-  // Handle standard format: <text start="s" dur="s">text</text>
   const stdRegex =
     /<text[^>]*\bstart="[\d.]+"[^>]*\bdur="[\d.]+"[^>]*>([\s\S]*?)<\/text>/g;
   while ((match = stdRegex.exec(xml)) !== null) {
@@ -188,14 +258,12 @@ async function fetchTranscriptFromTracks(
   }
 
   try {
-    const res = await fetch(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-      },
-    });
+    const res = await fetch(url, { headers: YT_HEADERS });
 
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.log("[transcript] Caption fetch status:", res.status);
+      return null;
+    }
 
     const xml = await res.text();
     const segments = parseTranscriptXml(xml);
@@ -210,7 +278,7 @@ async function fetchTranscriptFromTracks(
 export async function fetchYouTubeTranscript(
   videoId: string
 ): Promise<string | null> {
-  // Try Method 1: InnerTube API
+  // Method 1: InnerTube API
   console.log("[transcript] Trying InnerTube API...");
   const innerTubeTracks = await getTracksViaInnerTube(videoId);
   if (innerTubeTracks) {
@@ -221,7 +289,7 @@ export async function fetchYouTubeTranscript(
     }
   }
 
-  // Try Method 2: HTML scrape
+  // Method 2: HTML scrape
   console.log("[transcript] Trying HTML scrape...");
   const htmlTracks = await getTracksViaHtmlScrape(videoId);
   if (htmlTracks) {
@@ -232,7 +300,15 @@ export async function fetchYouTubeTranscript(
     }
   }
 
-  // Try Method 3: Direct timedtext API
+  // Method 3: Embed page
+  console.log("[transcript] Trying embed page...");
+  const embedResult = await getTranscriptViaEmbedPage(videoId);
+  if (embedResult) {
+    console.log("[transcript] Embed page succeeded");
+    return embedResult;
+  }
+
+  // Method 4: Direct timedtext API
   console.log("[transcript] Trying direct timedtext API...");
   const timedTextResult = await getTranscriptViaTimedText(videoId);
   if (timedTextResult) {
