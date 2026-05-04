@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 export default async function AdminPage() {
   const session = await auth();
   if (!session?.user?.id) redirect("/login");
+  if (session.user.email !== "adityabanda@gmail.com") redirect("/dashboard/canvas");
 
   const users = await db.user.findMany({
     orderBy: { createdAt: "desc" },
