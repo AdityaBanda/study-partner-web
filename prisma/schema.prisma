@@ -138,6 +138,14 @@ model QuizAttempt {
   completedAt DateTime?
 }
 
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  email     String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
 model Answer {
   id             String   @id @default(cuid())
   attemptId      String
