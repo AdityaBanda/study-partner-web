@@ -163,7 +163,7 @@ export function DocumentView({ document: doc }: DocumentViewProps) {
 
             <div className="space-y-4">
               {selectedNode ? (
-                <div className="bg-card border border-accent/50 rounded-xl p-5 animate-in fade-in slide-in-from-right-4 duration-200">
+                <div className="bg-card border border-accent/50 rounded-xl p-5">
                   <div className="flex items-center justify-between mb-4">
                     <h4 className="font-semibold text-accent text-lg">
                       {selectedNode}
